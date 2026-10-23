@@ -1,0 +1,11 @@
+[package]
+name = "susnotes-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "susnotes-api: local encrypted markdown knowledge base"
+
+[lints]
+workspace = true

@@ -1,0 +1,3 @@
+# Unwrapping in tests states an expectation clearly; in shipping code it is a bug.
+allow-unwrap-in-tests = true
+too-many-arguments-threshold = 8

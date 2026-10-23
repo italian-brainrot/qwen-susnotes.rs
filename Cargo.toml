@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/api", "crates/cli", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/italian-brainrot/qwen-susnotes.rs"
+homepage = "https://github.com/italian-brainrot/qwen-susnotes.rs"
+authors = ["italian-brainrot"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+unused_lifetimes = "deny"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+# A curated set of the pedantic lints that catch real problems in this codebase.
+explicit_iter_loop = "warn"
+redundant_clone = "warn"
+needless_pass_by_ref_mut = "warn"
+unnecessary_wraps = "warn"
+unused_self = "warn"
+used_underscore_binding = "warn"
+# App code panics are bugs that lose edits, so they are visible in review but not
+# blocked in tests, where unwrapping is the clearest way to state an expectation.
+unwrap_used = "warn"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "allow"
+print_stderr = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+struct_excessive_bools = "allow"
+too_many_lines = "allow"
+type_complexity = "allow"
+doc_markdown = "warn"
+
+# Debug builds of the GPU UI stack are unusably slow without any optimisation,
+# while application code still wants full debug info and no inlining surprises.
+[profile.dev]
+opt-level = 1
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
