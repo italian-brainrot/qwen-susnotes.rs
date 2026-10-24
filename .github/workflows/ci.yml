@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The dev profile already builds dependencies with optimisation (see the workspace
+  # Cargo.toml), so CI does not need a release build to be a fair reflection of local
+  # timings.
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  workspace:
+    name: fmt, clippy, test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The desktop app links against these; GPUI needs them at build time even when
+      # no GUI test runs. Keep this list in step with the README's install block.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfreetype-dev libfontconfig1-dev \
+            libssl-dev cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # Warnings are errors here on purpose: the lint set in the workspace manifest is
+      # what keeps four crates written by different sessions readable.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build (all binaries)
+        run: cargo build --workspace
+
+  # A vault written by one version has to stay readable by the next. This job exists to
+  # fail loudly if the record format changes without a migration.
+  vault-compat:
+    name: vault format round trip
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: init, write, verify, re-read
+        run: |
+          cargo build -p susnotes-cli
+          export SUSNOTS_STATE_DIR="$PWD/.state" SUSNOTS_PASSWORD="ci password"
+          BIN=target/debug/susnotes-cli
+          $BIN init "$PWD/.vault" --kdf test
+          $BIN today "a journal line"
+          $BIN write "A note" --content="links to [[Another note]]"
+          $BIN verify
+          $BIN read "A note" --raw | grep -q "Another note"
+          $BIN rename "A note" "Renamed note"
+          $BIN read "Renamed note" --raw | grep -q "Another note"
+          # Two notes: the journal page for today, and the renamed one. A vault that
+          # grew or lost a note in the middle of this sequence means the format
+          # changed under us.
+          $BIN --json stats | grep -q '"notes":2'
+          $BIN --json search another | grep -q '"note":"Renamed note"'

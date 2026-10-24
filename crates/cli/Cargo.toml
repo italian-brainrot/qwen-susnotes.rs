@@ -1,0 +1,24 @@
+[package]
+name = "susnotes-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "susnotes-cli: local encrypted markdown knowledge base"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive"] }
+rpassword = "7.5.4"
+serde_json = "1.0.154"
+susnotes-api = { version = "0.1.0", path = "../api" }
+susnotes-core = { version = "0.1.0", path = "../core" }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"
