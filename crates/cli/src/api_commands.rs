@@ -123,7 +123,7 @@ fn endpoint(cli: &Cli, context: &Context) -> Result<Endpoint> {
     })
 }
 
-fn client(cli: &Cli, context: &mut Context) -> Result<Client> {
+fn client(cli: &Cli, context: &Context) -> Result<Client> {
     let Endpoint { base, token } = endpoint(cli, context)?;
     Ok(Client::new(base, token))
 }

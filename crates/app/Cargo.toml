@@ -5,7 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "susnotes-app: local encrypted markdown knowledge base"
+description = "susnotes: local encrypted markdown knowledge base, desktop app"
 
 [lints]
 workspace = true
+
+[dependencies]
+gpui-kit = "0.8.0"
+serde_json = "1.0.154"
+susnotes-api = { version = "0.1.0", path = "../api" }
+susnotes-core = { version = "0.1.0", path = "../core" }
+tracing = "0.1.44"
