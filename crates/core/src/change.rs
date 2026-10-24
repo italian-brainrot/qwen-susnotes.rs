@@ -53,6 +53,38 @@ pub enum Change {
     Resync,
 }
 
+impl Change {
+    /// The event name used on the API event stream, matching the serde tag.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::NoteCreated { .. } => "note_created",
+            Self::NoteUpdated { .. } => "note_updated",
+            Self::NoteDeleted { .. } => "note_deleted",
+            Self::NoteRenamed { .. } => "note_renamed",
+            Self::AssetAdded { .. } => "asset_added",
+            Self::AssetDeleted { .. } => "asset_deleted",
+            Self::Unlocked => "unlocked",
+            Self::Locked => "locked",
+            Self::SettingsUpdated => "settings_updated",
+            Self::Resync => "resync",
+        }
+    }
+
+    /// The note or asset this change is about, when there is one.
+    #[must_use]
+    pub fn subject(&self) -> Option<&str> {
+        match self {
+            Self::NoteCreated { name }
+            | Self::NoteUpdated { name }
+            | Self::NoteDeleted { name } => Some(name),
+            Self::NoteRenamed { new, .. } => Some(new),
+            Self::AssetAdded { path } | Self::AssetDeleted { path } => Some(path),
+            Self::Unlocked | Self::Locked | Self::SettingsUpdated | Self::Resync => None,
+        }
+    }
+}
+
 /// Queue depth per subscriber. A consumer that falls this far behind gets a
 /// [`Change::Resync`] instead of more events, which tells it to reload rather
 /// than to keep trusting a partial history.

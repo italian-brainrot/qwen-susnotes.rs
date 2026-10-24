@@ -486,6 +486,17 @@ pub fn random_salt() -> Result<[u8; SALT_LEN]> {
     random_bytes::<SALT_LEN>()
 }
 
+/// A random bearer token for the local API.
+///
+/// The token is a capability: whoever presents it can read and write every note
+/// in the currently unlocked vault. It is minted once by the app and kept in the
+/// vault's own settings, which is why the API can hand it out but never accept
+/// an empty one.
+pub fn random_token() -> Result<String> {
+    let bytes = random_bytes::<24>()?;
+    Ok(B64.encode(bytes))
+}
+
 /// How many bytes an empty record occupies on disk: header, nonce and tag.
 ///
 /// Comparing a file's size against this answers "does this note hold anything"

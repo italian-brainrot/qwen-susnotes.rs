@@ -141,6 +141,16 @@ pub struct JournalResponse {
     pub previous: Vec<JournalPage>,
 }
 
+/// Body of `POST /api/v1/journal/append`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalAppendRequest {
+    /// Text to add to the end of the page.
+    pub text: String,
+    /// Which day, as `YYYY-MM-DD`. Today when omitted.
+    #[serde(default)]
+    pub date: Option<String>,
+}
+
 /// `GET /api/v1/graph`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphResponse {
@@ -326,6 +336,13 @@ mod tests {
         let request: RenameRequest =
             serde_json::from_str(r#"{"to":"New","rewrite_links":false}"#).unwrap();
         assert!(!request.rewrite_links);
+    }
+
+    #[test]
+    fn a_journal_append_without_a_date_means_today() {
+        let request: JournalAppendRequest = serde_json::from_str(r#"{"text":"pasted"}"#).unwrap();
+        assert_eq!(request.text, "pasted");
+        assert_eq!(request.date, None);
     }
 
     #[test]

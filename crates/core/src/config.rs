@@ -185,7 +185,12 @@ impl Settings {
     /// Write `config/settings.json` atomically with owner-only permissions.
     pub fn store(&self, config_dir: &Path) -> Result<()> {
         let path = config_dir.join(SETTINGS_FILE);
-        let json = serde_json::to_vec_pretty(self).map_err(|err| Error::Config {
+        // Normalise on the way out. A slider, a hand-edited file or an API call
+        // can all produce a value the app cannot act on, and writing it down
+        // would mean the next start has to defend against it too.
+        let mut settings = self.clone();
+        settings.normalize();
+        let json = serde_json::to_vec_pretty(&settings).map_err(|err| Error::Config {
             file: path.clone(),
             reason: err.to_string(),
         })?;

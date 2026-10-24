@@ -20,6 +20,12 @@ pub fn journal_name(date: NaiveDate) -> String {
     date.format(JOURNAL_DATE_FORMAT).to_string()
 }
 
+/// Today's journal page name, in the local time zone.
+#[must_use]
+pub fn today_name() -> String {
+    journal_name(today())
+}
+
 /// Parse a journal page name back into its day, rejecting anything that is
 /// not in the canonical form (`2026-1-2` is a note, not a journal page).
 #[must_use]
