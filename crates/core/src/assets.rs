@@ -36,6 +36,20 @@ pub enum AssetKind {
 }
 
 impl AssetKind {
+    /// The name used in the API and in `susnotes-cli assets --json`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Pdf => "pdf",
+            Self::Audio => "audio",
+            Self::Video => "video",
+            Self::Archive => "archive",
+            Self::Text => "text",
+            Self::Other => "other",
+        }
+    }
+
     /// Whether the app should try to open this itself instead of rendering it.
     #[must_use]
     pub fn opens_externally(self) -> bool {

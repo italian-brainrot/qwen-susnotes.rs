@@ -64,6 +64,18 @@ pub enum StartPage {
     Notes,
 }
 
+impl ThemeMode {
+    /// The spelling used on disk, in the API, and in `settings` output.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+}
+
 /// How the note body opens when a note is clicked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +85,29 @@ pub enum OpenMode {
     View,
     /// Markdown source straight into the editor.
     Edit,
+}
+
+impl StartPage {
+    /// The spelling used on disk and in settings output.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Journal => "journal",
+            Self::LastNote => "last",
+            Self::Notes => "notes",
+        }
+    }
+}
+
+impl OpenMode {
+    /// The spelling used on disk and in settings output.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Edit => "edit",
+        }
+    }
 }
 
 /// Settings for the local, loopback-only HTTP API.

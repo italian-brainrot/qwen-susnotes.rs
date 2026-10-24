@@ -226,6 +226,14 @@ impl Client {
         self.call("GET", route, None)?.into_result()
     }
 
+    /// Send a request with no body and hand back the status and parsed JSON.
+    ///
+    /// This is the raw form; [`Self::get_json`] is the one that turns a non-2xx
+    /// into an error.
+    pub fn call_json(&self, method: &str, route: &str) -> Result<ApiResponse, Error> {
+        self.call(method, route, None)
+    }
+
     /// Send a JSON body with `method` to `route`.
     ///
     /// This is the escape hatch for endpoints the typed helpers do not cover, and

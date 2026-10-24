@@ -367,6 +367,12 @@ impl Vault {
         Ok(vault)
     }
 
+    /// Whether a folder is a susnotes vault, without reading its contents.
+    #[must_use]
+    pub fn is_vault(root: impl AsRef<Path>) -> bool {
+        UnlockRequest::is_vault(root)
+    }
+
     /// Locate a vault at `root` and prepare to unlock it.
     pub fn open(root: impl AsRef<Path>) -> Result<UnlockRequest> {
         UnlockRequest::discover(root)

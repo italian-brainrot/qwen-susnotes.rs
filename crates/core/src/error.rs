@@ -72,6 +72,10 @@ pub enum Error {
     #[error("API error {status}: {message}")]
     ApiError { status: u16, message: String },
 
+    /// JSON could not be read or produced.
+    #[error("JSON error: {0}")]
+    Json(String),
+
     /// Anything the layers above have no specific handling for.
     #[error("{0}")]
     Other(String),
@@ -79,11 +83,7 @@ pub enum Error {
 
 impl Error {
     /// Wrap an IO failure with what was being attempted and where.
-    pub(crate) fn io(
-        action: impl Into<String>,
-        path: impl Into<PathBuf>,
-        source: std::io::Error,
-    ) -> Self {
+    pub fn io(action: impl Into<String>, path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             action: action.into(),
             path: path.into(),
@@ -96,6 +96,18 @@ impl Error {
     pub fn is_missing(&self) -> bool {
         matches!(self, Self::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound)
             || matches!(self, Self::NotAVault { .. })
+    }
+
+    /// Which file or folder this error is about, when there is one.
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Io { path, .. }
+            | Self::NotAVault { path }
+            | Self::InvalidVault { path, .. }
+            | Self::Config { file: path, .. } => Some(path),
+            _ => None,
+        }
     }
 
     /// A short, stable identifier for the error, used in logs and in the API.
@@ -116,6 +128,7 @@ impl Error {
             Self::BadRequest(_) => "bad_request",
             Self::ApiUnreachable { .. } => "api_unreachable",
             Self::ApiError { .. } => "api_error",
+            Self::Json(_) => "json",
             Self::Other(_) => "other",
         }
     }

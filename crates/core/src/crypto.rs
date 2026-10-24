@@ -117,6 +117,14 @@ pub enum KdfAlgorithm {
 }
 
 impl KdfAlgorithm {
+    /// The name written into the vault's settings and reported by the API.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Argon2id => "argon2id",
+        }
+    }
+
     fn as_byte(self) -> u8 {
         match self {
             Self::Argon2id => 1,
@@ -171,6 +179,21 @@ impl KdfParams {
             algorithm: KdfAlgorithm::Argon2id,
             memory_kib: 64,
             iterations: 2,
+            parallelism: 1,
+        }
+    }
+
+    /// Slower parameters, for a vault whose contents would be worth attacking.
+    ///
+    /// This is a deliberate trade: opening the vault takes about a second longer,
+    /// and an offline attacker pays the same per guess. The choice is recorded in
+    /// the vault, so raising it later only needs a password change.
+    #[must_use]
+    pub fn strong() -> Self {
+        Self {
+            algorithm: KdfAlgorithm::Argon2id,
+            memory_kib: 64 * 1024,
+            iterations: 4,
             parallelism: 1,
         }
     }

@@ -98,8 +98,35 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Write the port this server bound to back into the vault's settings, so a
+    /// client that only knows the vault folder can still find the API.
+    fn record_listen_port(&self, addr: SocketAddr) {
+        let mut settings = match self.vault.settings() {
+            Ok(settings) => settings,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read settings to record the API port");
+                return;
+            }
+        };
+        if settings.api.port == addr.port() {
+            return;
+        }
+        settings.api.port = addr.port();
+        if let Err(err) = self.vault.write_settings(&settings) {
+            tracing::warn!(error = %err, port = addr.port(), "could not record the API port in the vault settings");
+            return;
+        }
+        if let Ok(mut current) = self.token.write() {
+            *current = settings.api.token;
+        }
+        tracing::info!(
+            port = addr.port(),
+            "recorded the API port in the vault settings"
+        );
+    }
+
     /// Keep the running token in step with settings that were just written.
-    fn set_token(&self, token: &str) {
+    pub(crate) fn set_token(&self, token: &str) {
         if let Ok(mut current) = self.token.write() {
             *current = token.to_owned();
         }
@@ -267,7 +294,11 @@ pub async fn serve(state: AppState, bind: Bind) -> Result<ApiHandle, susnotes_co
         })?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let app = router(state);
+    let app = router(state.clone());
+    // Record where the API actually landed. A caller may have asked for port 0,
+    // and the CLI, an agent, or a second window can only find the API if the
+    // vault's own settings say which port is serving it.
+    state.record_listen_port(addr);
 
     let task = tokio::spawn(async move {
         let server = axum::serve(listener, app).with_graceful_shutdown(async move {

@@ -37,6 +37,18 @@ pub enum LinkSyntax {
     Markdown,
 }
 
+impl LinkSyntax {
+    /// The name used in the API and in CLI output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Wiki => "wiki",
+            Self::Hash => "hash",
+            Self::Markdown => "markdown",
+        }
+    }
+}
+
 /// One link to another note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteLink {
