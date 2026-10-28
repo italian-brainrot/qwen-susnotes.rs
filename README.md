@@ -29,13 +29,14 @@ pieces these need - `blocks` reports math and image blocks, `add_asset` stores f
 ## Install and build
 
 Rust 1.85 or newer. On Linux the desktop app links against a handful of system
-libraries:
+libraries; `scripts/dev-env-check.sh --install` prints this command for whatever a
+machine is missing, and `just env` runs the same check:
 
 ```sh
 sudo apt-get install -y \
   libx11-dev libx11-xcb-dev libxcb1-dev \
   libxkbcommon-dev libxkbcommon-x11-dev \
-  libfreetype-dev libfontconfig1-dev libssl-dev pkg-config
+  libfreetype-dev libfontconfig1-dev libssl-dev zlib1g-dev pkg-config cmake
 ```
 
 ```sh
@@ -170,13 +171,19 @@ check works before anything is unlocked.
 
 ## Development
 
+`just` runs the tasks; `just check` is exactly what CI runs, and `just env` says whether
+this machine can build, test and run the workspace at all (it is the same check the
+`tooling` CI job runs, and `scripts/dev-env-check.sh --install` prints the `apt-get` and
+`rustup` commands for whatever it finds missing):
+
 ```sh
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p susnotes-app            # the desktop app
-cargo run -p susnotes-cli -- --help  # the command line
-cargo run -p susnotes-api --example smoke   # the API, end to end in one process
+just check        # fmt --check, clippy -D warnings, cargo test --workspace
+just run          # the desktop app
+just cli --help   # the command line, e.g. just cli stats --json
+just smoke        # the API, end to end in one process
+just vault-smoke  # a vault round trip in a throwaway folder, like the vault-compat job
+just env          # the development environment check
+just mutation     # mutation testing of the core crate (slow)
 ```
 
 The workspace is four crates, in the order anything needs them:

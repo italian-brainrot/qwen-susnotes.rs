@@ -138,4 +138,9 @@ clear shape (a background thread forwarding into a GPUI entity), not an unknown.
 
 CI runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 and `cargo test --workspace`. Warnings are errors, so new code has to keep the lint
-set clean rather than adding `#[allow]` in passing.
+set clean rather than adding `#[allow]` in passing. Locally the same contract is
+`just check`, and `just env` (`scripts/dev-env-check.sh`) says whether a machine
+can run it at all: the toolchain and its components, the system libraries the
+desktop app links against, and a display/GPU setup worth complaining about. The
+`tooling` CI job keeps the justfile formatted and the scripts linted, so the
+tasks themselves stay honest.

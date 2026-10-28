@@ -29,7 +29,12 @@ jobs:
             libx11-dev libx11-xcb-dev libxcb1-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libfreetype-dev libfontconfig1-dev \
-            libssl-dev cmake
+            libssl-dev zlib1g-dev cmake
+
+      # The same list of libraries the README, the CI job and scripts/dev-env-check.sh
+      # use: this step fails when a machine would not be able to build the app.
+      - name: Development environment check
+        run: ./scripts/dev-env-check.sh --libs --quiet
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -50,6 +55,34 @@ jobs:
 
       - name: Build (all binaries)
         run: cargo build --workspace
+
+  # The tasks and the scripts are code too: this job keeps the justfile formatted, the
+  # scripts linted, and the environment check honest about the commands a session uses.
+  tooling:
+    name: justfile and scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Task tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends just shellcheck
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: justfile formatting
+        run: just --unstable --fmt --check
+
+      - name: shell script lint
+        run: shellcheck --severity=warning scripts/*.sh
+
+      # A runner without the desktop libraries can still answer the half of the check
+      # that is about commands, cargo subcommands and rustup components.
+      - name: Development environment check
+        run: ./scripts/dev-env-check.sh --tools --quiet
 
   # A vault written by one version has to stay readable by the next. This job exists to
   # fail loudly if the record format changes without a migration.
