@@ -16,7 +16,7 @@ curl -H "Authorization: Bearer …" http://127.0.0.1:47117/api/v1/notes
 
 ## Status
 
-Working and covered by tests (169 of them): the vault format, the CLI, the HTTP API,
+Working and covered by tests (181 of them): the vault format, the CLI, the HTTP API,
 and the desktop app's core loop - unlock, journal page, note list, view and edit a
 note, follow links, autosave, light and dark themes, logging into the vault folder.
 

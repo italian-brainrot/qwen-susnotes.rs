@@ -230,6 +230,178 @@ fn case_only_renames_are_visible_on_case_insensitive_lookups() {
     );
     assert_eq!(vault.list_notes().unwrap().len(), 1);
 }
+#[test]
+fn a_case_only_rename_leaves_one_record_and_nothing_else_behind() {
+    // The spelling of a name is not a second note: on a case insensitive file
+    // system (APFS, NTFS, FAT) the old and the new spelling are the same
+    // directory entry, which is why the new record has to be staged before the
+    // old entry is moved out of the way - writing the target first would land on
+    // the entry the rename then deletes, and the vault would have no note left.
+    let dir = tempfile::tempdir().unwrap();
+    let vault =
+        susnotes_core::Vault::create(dir.path(), b"pw", KdfParams::test_defaults()).unwrap();
+    vault.write_note("hello world", "the content").unwrap();
+
+    vault
+        .rename_note("hello world", "Hello World", true)
+        .unwrap();
+
+    let note = vault.read_note("hello world").unwrap();
+    assert_eq!(note.name.as_str(), "Hello World");
+    assert_eq!(note.content, "the content");
+    assert_eq!(vault.list_notes().unwrap().len(), 1, "two records appeared");
+
+    let entries: Vec<_> = std::fs::read_dir(dir.path().join("pages"))
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "the staging files stayed behind: {entries:?}"
+    );
+}
+
+#[test]
+fn a_rename_rewrites_each_link_with_the_text_for_that_link() {
+    // Two links to the same note in one line, written in two of the three
+    // syntaxes, and a new name that a hash link can hold. Every syntax rewrites
+    // to something different, so pairing a range with another link's
+    // replacement - which is what sorting the ranges on their own did - shows up
+    // here as soon as it happens.
+    let (_dir, vault) = temp_vault(b"pw");
+    vault.write_note("Alpha", "the original").unwrap();
+    vault
+        .write_note(
+            "Inbox",
+            "hash #Alpha, alias [[Alpha|Label]], plain [[Alpha]]",
+        )
+        .unwrap();
+
+    let outcome = vault.rename_note("Alpha", "Beta", true).unwrap();
+    assert_eq!(outcome.links_rewritten, 1);
+    assert_eq!(
+        vault.read_note("Inbox").unwrap().content,
+        "hash #Beta, alias [[Beta|Label]], plain [[Beta]]",
+        "a replacement was written at another link's position"
+    );
+}
+
+#[test]
+fn a_rename_rewrites_links_whose_new_name_is_too_long_to_store() {
+    // The other half of the pairing rule: the ranges come from one note and the
+    // replacements are built for the new name, so both must come from the same
+    // list of links.
+    let (_dir, vault) = temp_vault(b"pw");
+    vault.write_note("Alpha", "one").unwrap();
+    vault
+        .write_note(
+            "Notes",
+            "#Alpha then [[Alpha|an alias]] then [x](susnotes:Alpha)",
+        )
+        .unwrap();
+    vault.rename_note("Alpha", "Second Alpha", true).unwrap();
+    // A hash link cannot hold a name with a space, so it becomes a wiki link;
+    // the alias keeps its label, and the markdown form keeps its own target.
+    assert_eq!(
+        vault.read_note("Notes").unwrap().content,
+        "[[Second Alpha]] then [[Second Alpha|an alias]] then [x](susnotes:Second%20Alpha)"
+    );
+}
+
+#[test]
+fn export_never_puts_two_notes_in_one_file() {
+    // Names that export to the same readable file name (`A:B` and `A-B`, and the
+    // two long names cut at the same 80 characters) are the reason an export has
+    // to make its names unique: the plaintext copy is the one a user can fall
+    // back on, and losing a note to an overwrite would be the whole backup.
+    let (_dir, vault) = temp_vault(b"pw");
+    vault.write_note("A:B", "the first").unwrap();
+    vault.write_note("A-B", "the second").unwrap();
+    vault.write_note("A?B", "the third").unwrap();
+    let long_prefix = "x".repeat(80);
+    vault
+        .write_note(&format!("{long_prefix}-one"), "long one")
+        .unwrap();
+    vault
+        .write_note(&format!("{long_prefix}-two"), "long two")
+        .unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    let summary = vault.export_plaintext(out.path()).unwrap();
+    assert_eq!(summary.notes, 5);
+
+    let mut contents = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(out.path().join("pages")).unwrap() {
+        let entry = entry.unwrap();
+        contents.insert(
+            entry.file_name().to_string_lossy().into_owned(),
+            std::fs::read_to_string(entry.path()).unwrap(),
+        );
+    }
+    assert_eq!(contents.len(), 5, "export files: {contents:?}");
+    for text in [
+        "the first",
+        "the second",
+        "the third",
+        "long one",
+        "long two",
+    ] {
+        assert!(
+            contents.values().any(|body| body == text),
+            "{text:?} was not exported: {contents:?}"
+        );
+    }
+}
+
+#[test]
+fn a_name_the_folder_cannot_hold_is_rejected_as_a_name_error() {
+    // A name is stored escaped and measured in bytes, so a name of 90 emoji is
+    // 90 characters and 360 bytes: the vault has to say the name is too long,
+    // not report an operating system error from a temporary file three hundred
+    // bytes deep, and it must not have written anything out to do it.
+    let dir = tempfile::tempdir().unwrap();
+    let vault =
+        susnotes_core::Vault::create(dir.path(), b"pw", KdfParams::test_defaults()).unwrap();
+
+    for name in ["\u{1f642}".repeat(90), "\u{8c03}".repeat(100)] {
+        let err = vault.write_note(&name, "x").unwrap_err();
+        assert!(matches!(err, Error::InvalidName { .. }), "{err}");
+        let message = err.to_string();
+        assert!(
+            message.contains("too long") && message.contains("byte"),
+            "the rejection says {message:?}"
+        );
+    }
+    assert!(vault.list_notes().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("pages")).unwrap().count(),
+        0,
+        "a rejected name still reached the folder"
+    );
+}
+
+#[test]
+fn an_io_failure_names_the_reason_the_operating_system_gave() {
+    // The vault cannot read a note it cannot open, and the vault's own log line
+    // is what a support request comes down to: "could not read" is not an
+    // answer, the reason the file system gave is.
+    let dir = tempfile::tempdir().unwrap();
+    let vault =
+        susnotes_core::Vault::create(dir.path(), b"pw", KdfParams::test_defaults()).unwrap();
+    vault.write_note("Notes", "content").unwrap();
+
+    let file = dir.path().join("pages/Notes.md");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let err = vault.read_note("Notes").unwrap_err();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let message = err.to_string();
+    assert!(
+        message.contains("Permission denied") || message.contains("Permission"),
+        "the reason is missing from {message:?}"
+    );
+}
 
 #[test]
 fn links_backlinks_and_missing_links_are_all_reported() {

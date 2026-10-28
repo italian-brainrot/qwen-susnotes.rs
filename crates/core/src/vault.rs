@@ -474,6 +474,79 @@ impl Vault {
         std::fs::metadata(&path).map_err(|err| Error::io("stat", &path, err))
     }
 
+    /// Put a new record where `old_path` is, without ever writing there before
+    /// the old entry has been moved out of the way.
+    ///
+    /// The order is the reason this exists: a case only rename (`hello` to
+    /// `Hello`) names one and the same directory entry on APFS, NTFS and FAT,
+    /// so writing the target first, the way an ordinary rename does, would land
+    /// on the entry that is then moved aside and deleted, and the note would be
+    /// gone. Neither copy of either record is ever missing: the new content goes
+    /// to a temporary name in the same folder, the old entry is moved aside,
+    /// the staged record is renamed to its final path, and if any step fails the
+    /// old entry is put back where it was.
+    fn replace_in_place(
+        &self,
+        old_path: &Path,
+        rel_target: &str,
+        kind: RecordKind,
+        plaintext: &[u8],
+    ) -> Result<()> {
+        let final_path = self.record_path(rel_target)?;
+        // The record is encrypted under the path it is going to live at, while
+        // it is still sitting in a temporary file: the header binds it to the
+        // place it is meant to be, exactly as a single write would.
+        let sealed = crate::crypto::encrypt(
+            &self.master,
+            kind,
+            self.meta.kdf.algorithm,
+            rel_target,
+            plaintext,
+        )?;
+        let staged = fs::staging_path(&final_path, "staged");
+        fs::write_atomic(&staged, &sealed)?;
+
+        let aside = fs::staging_path(old_path, "aside");
+        if let Err(err) = std::fs::rename(old_path, &aside)
+            .map_err(|err| Error::io("move the note aside", old_path, err))
+        {
+            // Nothing was written at the final path, and the staged record is
+            // the note's only copy besides the entry still in place: leave no
+            // file behind that the vault's listings would never read.
+            let _ = fs::remove_optional(&staged);
+            return Err(err);
+        }
+        if let Err(err) = std::fs::rename(&staged, &final_path)
+            .map_err(|err| Error::io("replace", &final_path, err))
+        {
+            // The staged record never made it, so the entry that was moved aside
+            // is the only copy of the note: put it back instead of leaving the
+            // note in a temporary name the listings do not read.
+            if let Err(restore) = std::fs::rename(&aside, old_path) {
+                warn!(
+                    note = %old_path.display(),
+                    %restore,
+                    "a replacement failed and the note could not be put back where it was"
+                );
+            }
+            let _ = fs::remove_optional(&staged);
+            return Err(err);
+        }
+        // The replacement is done; a leftover temporary file is not a reason to
+        // report the rename as having failed, so it is reported on its own.
+        if let Err(err) = fs::remove_optional(&aside) {
+            warn!(
+                file = %aside.display(),
+                %err,
+                "the note was replaced, and the entry it was moved aside to stayed behind"
+            );
+        }
+        // The renames above changed the folder's entries; syncing that folder is
+        // what makes the replacement survive a power loss.
+        let _ = fs::sync_dir(final_path.parent().unwrap_or(Path::new(".")));
+        Ok(())
+    }
+
     /// Every note in `pages/`, newest first.
     ///
     /// This only reads file names and metadata; nothing is decrypted.
@@ -730,19 +803,23 @@ impl Vault {
         };
 
         let content = self.read_summary(&source)?.content;
-        self.write_record(&target.vault_path(), RecordKind::Note, content.as_bytes())?;
-
-        let old_path = self.record_path(&source.path)?;
         if source.name.key() == target.key() {
-            // Same name, different spelling: stage through a temporary file so a
-            // case insensitive file system does not treat the write as no change.
-            let staged =
-                self.record_path(&format!("{PAGES_DIR}/.susnotes-rename-{}", now_millis()))?;
-            std::fs::rename(&old_path, &staged)
-                .map_err(|err| Error::io("stage rename", &old_path, err))?;
-            fs::remove_optional(&staged)?;
+            // The same name, spelled differently: on a case insensitive file
+            // system the two spellings are one directory entry, so the order
+            // here matters more than it looks. Writing the target first, the way
+            // an ordinary rename does, would put the new record on top of the
+            // entry that is then moved aside and deleted, taking the note with
+            // it. `replace_in_place` stages the new record first.
+            let old_path = self.record_path(&source.path)?;
+            self.replace_in_place(
+                &old_path,
+                &target.vault_path(),
+                RecordKind::Note,
+                content.as_bytes(),
+            )?;
         } else {
-            fs::remove_optional(&old_path)?;
+            self.write_record(&target.vault_path(), RecordKind::Note, content.as_bytes())?;
+            fs::remove_optional(&self.record_path(&source.path)?)?;
         }
 
         let links_rewritten = if rewrite_links {
@@ -782,14 +859,19 @@ impl Vault {
             }
             let current = self.read_summary(&note)?;
             let mut content = current.content.clone();
-            // Rewrite from the end so earlier ranges keep their offsets.
-            let mut ranges: Vec<&std::ops::Range<usize>> =
-                relevant.iter().map(|link| &link.range).collect();
-            ranges.sort_by_key(|range| std::cmp::Reverse(range.start));
-            for (link, range) in relevant.iter().zip(ranges) {
-                let replacement = new_link_text(link, target);
+            // The text that replaces a link and the range it replaces belong in
+            // one package: two vectors sorted separately pair every replacement
+            // with a different link, which writes the new text into the wrong
+            // place. Rewriting from the back keeps earlier offsets valid, and
+            // sorting the pairs together keeps each text with its own range.
+            let mut rewrites: Vec<(std::ops::Range<usize>, String)> = relevant
+                .iter()
+                .map(|link| (link.range.clone(), new_link_text(link, target)))
+                .collect();
+            rewrites.sort_by_key(|rewrite| std::cmp::Reverse(rewrite.0.start));
+            for (range, replacement) in rewrites {
                 if range.end <= content.len() {
-                    content.replace_range(range.clone(), &replacement);
+                    content.replace_range(range, &replacement);
                 }
             }
             if content != current.content {
@@ -1049,11 +1131,16 @@ impl Vault {
         std::fs::create_dir_all(target).map_err(|err| Error::io("create folder", target, err))?;
         let mut summary = ExportSummary::default();
 
+        // One set per export run: two notes whose names turn into the same file
+        // name (`A:B` and `A-B`, or names that share their first 80 characters)
+        // must not share a file, because an export is the one copy a user is
+        // meant to be able to read without the vault, and silently writing one
+        // note over another is data loss.
+        let mut names = std::collections::HashSet::new();
         for note in self.list_notes()? {
             let content = self.read_summary(&note)?;
-            let out = target
-                .join(PAGES_DIR)
-                .join(format!("{}.md", slug_file_name(content.name.as_str())));
+            let file_name = export_file_name(content.name.as_str(), &mut names);
+            let out = target.join(PAGES_DIR).join(&file_name);
             fs::write_atomic(&out, content.content.as_bytes())?;
             summary.notes += 1;
         }
@@ -1169,8 +1256,8 @@ pub struct ExportSummary {
     pub assets: usize,
 }
 
-/// A readable file name for exported notes (they are decrypted copies, so they
-/// no longer need the vault's reversible escaping).
+/// A readable file name stem for an exported note: exported copies are plain
+/// markdown, so they no longer need the vault's reversible escaping.
 fn slug_file_name(name: &str) -> String {
     let slug: String = name
         .chars()
@@ -1193,6 +1280,48 @@ fn slug_file_name(name: &str) -> String {
     } else {
         slug
     }
+}
+
+/// A readable file name for an exported note, unique within one export run.
+///
+/// The note's own name is not usable outside the vault as it stands (it keeps
+/// the vault's escaping), and two different names can collapse into the same
+/// file name when the slug replaces characters or cuts the length at 80: `A:B`
+/// and `A-B` are the same file. The first note to claim a slug keeps the plain
+/// spelling, and every note after it gets the slug plus a hash of its own name;
+/// the collision is logged, because an export is the copy a user is meant to
+/// read without the vault, so silently overwriting a note would be data loss.
+fn export_file_name(name: &str, taken: &mut std::collections::HashSet<String>) -> String {
+    let stem = slug_file_name(name);
+    let base = format!("{stem}.md");
+    if taken.insert(base.clone()) {
+        return base;
+    }
+
+    // A note whose slug is already claimed gets the slug plus a hash of its own
+    // name, which is unique wherever the slug was not.
+    let tag = crate::assets::hash_tag(name.as_bytes());
+    let mut file_name = format!("{stem}-{tag}.md");
+    if !taken.insert(file_name.clone()) {
+        // The same slug and the same hash of the same name can only happen when
+        // the names differ in something the slug drops, so a number is the only
+        // thing left that can still be unique.
+        let mut index = 1;
+        loop {
+            let candidate = format!("{stem}-{tag}-{index}.md");
+            if taken.insert(candidate.clone()) {
+                file_name = candidate;
+                break;
+            }
+            index += 1;
+        }
+    }
+    warn!(
+        note = %name,
+        file = %file_name.as_str(),
+        "the export name was already used, wrote the note under another one"
+    );
+    file_name
 }
 
 /// The whole line containing `offset`, trimmed.
@@ -1225,5 +1354,99 @@ fn new_link_text(link: &LinkEdge, target: &NoteName) -> String {
             let label = link.alias.clone().unwrap_or_else(|| target_name.to_owned());
             format!("[{label}]({})", crate::links::note_link_url(target_name))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ordering rule of an in place replacement, checked on a file system
+    /// that is case sensitive: the entry that holds the note is moved out of the
+    /// way before anything is put at the final path, so a case only rename on
+    /// APFS, NTFS or FAT cannot destroy the only copy of the note. That is the
+    /// case the ordering protects, and it is only observable through what the
+    /// sequence leaves behind when its last step fails.
+    #[test]
+    fn a_replacement_stops_without_touching_the_final_path_if_the_move_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault =
+            Vault::create(dir.path(), b"pw", crate::crypto::KdfParams::test_defaults()).unwrap();
+        let pages = vault.pages_dir();
+
+        let old = pages.join("hello world.md");
+        fs::write_atomic(&old, b"the only copy").unwrap();
+        // Something in the way of the final path: the staged record exists, the
+        // old entry has been moved aside, and putting it in place is what fails.
+        let final_path = pages.join("Hello World.md");
+        std::fs::create_dir(&final_path).unwrap();
+
+        let err = vault
+            .replace_in_place(
+                &old,
+                "pages/Hello World.md",
+                RecordKind::Note,
+                b"the new content",
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Io { .. }), "{err}");
+
+        // Nothing reached the final path, and the entry that held the note was
+        // put back rather than left in a name the vault's listings do not read.
+        assert!(
+            std::fs::metadata(&final_path)
+                .map(|m| m.is_dir())
+                .unwrap_or(false),
+            "something was written at {final_path:?}"
+        );
+        assert_eq!(std::fs::read(&old).unwrap(), b"the only copy");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&pages)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path() != old && entry.path() != final_path)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the staged files were left behind: {leftovers:?}"
+        );
+    }
+
+    /// The shape a case insensitive file system actually gives the code: one
+    /// entry, one path, holding the old record before the rename and the new one
+    /// afterwards. ext4 cannot put two spellings on one entry, so the same path
+    /// stands in for the pair, and it is exactly the input the ordering has to
+    /// survive: replace the record where it already is without losing it.
+    #[test]
+    fn a_record_replaced_where_it_already_is_keeps_its_content_and_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault =
+            Vault::create(dir.path(), b"pw", crate::crypto::KdfParams::test_defaults()).unwrap();
+        vault.write_note("hello world", "the note").unwrap();
+        let path = dir.path().join("pages/hello world.md");
+
+        vault
+            .replace_in_place(
+                &path,
+                "pages/hello world.md",
+                RecordKind::Note,
+                b"the note, rewritten",
+            )
+            .unwrap();
+
+        let note = vault.read_note("Hello World").unwrap();
+        assert_eq!(note.content, "the note, rewritten");
+        assert_eq!(vault.list_notes().unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read_dir(dir.path().join("pages")).unwrap().count(),
+            1,
+            "the record was left in a staged name"
+        );
+        // A case only spelling of the same name is still the same note, which is
+        // what the ordering promised to keep true.
+        assert_eq!(
+            vault.read_note("HELLO WORLD").unwrap().name.as_str(),
+            "hello world"
+        );
     }
 }

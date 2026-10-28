@@ -12,7 +12,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Reading or writing the vault on disk failed.
-    #[error("could not {} ({path})", .action)]
+    ///
+    /// The operating system's own reason is part of the message, not only of the
+    /// error chain: `Permission denied`, `No space left` and `Read-only file
+    /// system` are the difference between a useful and a useless bug report,
+    /// and every layer (CLI, API, log file) renders only `Display`.
+    #[error("could not {} ({}): {}", .action, .path.display(), .source)]
     Io {
         action: String,
         path: PathBuf,
@@ -137,5 +142,30 @@ impl Error {
 impl From<Error> for String {
     fn from(error: Error) -> Self {
         error.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_io_failure_says_why_the_os_said_no() {
+        let error = Error::io(
+            "create",
+            "/vault/pages/notes.md",
+            std::io::Error::from_raw_os_error(13),
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("Permission denied"),
+            "the reason was missing from {text:?}"
+        );
+        assert!(text.contains("/vault/pages/notes.md"), "{text:?}");
+        assert!(text.contains("create"), "{text:?}");
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the io error must stay in the chain"
+        );
     }
 }

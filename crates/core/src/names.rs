@@ -11,9 +11,27 @@ use crate::error::{Error, Result};
 
 /// Longest accepted note name, in characters.
 ///
-/// The limit keeps the escaped file name comfortably inside the 255 byte
-/// limit most file systems enforce, so a vault stays portable.
+/// A friendly upper bound on what the UI has to lay out. The limit that decides
+/// whether a name is usable is `MAX_FILE_NAME_BYTES` below, because every file
+/// system measures the name's bytes, not its characters.
 pub const MAX_NAME_CHARS: usize = 100;
+
+/// The longest file-name component a note may occupy, in bytes.
+///
+/// Ext4, APFS, NTFS and most SMB servers agree on 255 bytes per component, and
+/// the name a note turns into is what they measure: a name of 90 emoji is 90
+/// characters and 360 bytes, so a character count accepts names that no folder
+/// can hold.
+pub const MAX_FILE_NAME_BYTES: usize = MAX_COMPONENT_BYTES - TEMP_NAME_BUDGET;
+
+/// What one path component is allowed to reach.
+const MAX_COMPONENT_BYTES: usize = 255;
+
+/// The room the atomic-write temporary name takes, plus a little margin: a note
+/// whose own file name fits must still be replaceable, and while the write is in
+/// flight the temporary name `.{name}.{8 hex}.tmp` (`.` + `.` + 8 + `.tmp` = 14)
+/// is counted against the same component limit.
+const TEMP_NAME_BUDGET: usize = 14 /* the temporary name around it */ + 4;
 
 /// Extensions reserved by the vault: only `.md` files are notes.
 pub const NOTE_EXTENSION: &str = "md";
@@ -73,6 +91,20 @@ impl NoteName {
                 reason: format!("at most {MAX_NAME_CHARS} characters are allowed"),
             });
         }
+        // And the byte check the file system actually enforces: without it a
+        // long name is accepted here and rejected by the atomic write, which
+        // reports it as "File name too long" three hundred bytes deep.
+        let file_bytes = file_name_for(trimmed).len();
+        if file_bytes > MAX_FILE_NAME_BYTES {
+            return Err(Error::InvalidName {
+                name: input.to_owned(),
+                reason: format!(
+                    "too long to store: the name becomes a {file_bytes} byte file name, \
+                     and only {MAX_FILE_NAME_BYTES} bytes are available inside a folder"
+                ),
+            });
+        }
+
         if trimmed.ends_with('.') {
             return Err(Error::InvalidName {
                 name: input.to_owned(),
@@ -369,6 +401,49 @@ mod tests {
     fn long_names_are_rejected_before_touching_the_file_system() {
         let cyrillic = "\u{0430}".repeat(MAX_NAME_CHARS + 1);
         assert!(NoteName::parse(&cyrillic).is_err());
+    }
+
+    #[test]
+    fn names_are_limited_by_bytes_because_thats_what_a_file_system_counts() {
+        // Two measures of the same limit: a name may have at most
+        // MAX_NAME_CHARS characters, and the file name that stores it may not
+        // take more than MAX_FILE_NAME_BYTES. A multi byte name runs into the
+        // second one long before the first, so the byte check has to exist.
+        let budget = MAX_FILE_NAME_BYTES;
+        let extension = NOTE_EXTENSION.len() + 1; // the `.md` that comes with it
+
+        for ch in ['\u{1f600}', '\u{4e2d}'] {
+            let size = ch.len_utf8();
+            let fits = ch.to_string().repeat((budget - extension) / size);
+            let file = file_name_for(&fits);
+            assert!(
+                file.len() <= budget,
+                "a {} byte file name was over budget",
+                file.len()
+            );
+            assert!(
+                NoteName::parse(&fits).is_ok(),
+                "a fitting name was rejected: {file}"
+            );
+
+            let over = ch.to_string().repeat((budget - extension) / size + 1);
+            let file = file_name_for(&over);
+            assert!(file.len() > budget, "the test name was not over budget");
+            let err = NoteName::parse(&over).unwrap_err();
+            assert!(matches!(err, Error::InvalidName { .. }), "it was accepted");
+            let message = err.to_string();
+            assert!(
+                message.contains("byte") && message.contains("too long"),
+                "the rejection does not explain the byte limit: {message}"
+            );
+        }
+
+        // A name whose characters are two bytes long never runs into the byte
+        // limit, because the character limit is the tighter one: that is fine,
+        // and is why the character check is kept next to the byte check.
+        let two_byte = "\u{00e4}".repeat(MAX_NAME_CHARS);
+        assert!(file_name_for(&two_byte).len() <= budget);
+        assert!(NoteName::parse(&two_byte).is_ok());
     }
 
     #[test]

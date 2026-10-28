@@ -53,12 +53,32 @@ accident: `Hub::create` and `susnotes-cli init` name them explicitly.
 
 ## Names
 
-`NoteName` is a reversible file-name escape: reserved characters (`/ \ : ? * " < > |`,
-leading/trailing dots and spaces) become `%xx`, and the mapping is one-to-one, so
-`NoteName` → file → `NoteName` round-trips. Lookup is by `key()`, a case- and
-accent-folded form, which is why `reading list` finds `Reading List` while the file
-keeps the spelling that was typed. Case-only renames are staged through a temporary
-file because some file systems treat the two names as the same file.
+`NoteName` is a reversible file-name escape: reserved characters (`/ \ : ? * " < > |`)
+become `%xx`, and the mapping is one-to-one, so `NoteName` → file → `NoteName`
+round-trips. A name is limited twice, and the limits measure different things:
+`MAX_NAME_CHARS` counts characters (it is the UI's bound), `MAX_FILE_NAME_BYTES`
+counts the bytes of the escaped file name, which is what a file system counts. A name
+of 90 emoji is 90 characters and 360 bytes, so the byte check has to be part of
+`NoteName::parse`: without it the vault accepts the name, and reports
+"File name too long" from an atomic write three hundred bytes away from the
+decision.
+
+Lookup is by `key()`, a case-folded form, which is why `reading list` finds `Reading
+List` while the file keeps the spelling that was typed.
+
+Case-only renames are the one rename that must be staged. On APFS, NTFS and FAT the
+old and the new spelling are the *same directory entry*, so writing the target first
+(the order an ordinary rename uses, and the order that looked harmless on ext4)
+would put the new record on top of the entry the rename then moves aside and
+deletes, and the note would be gone. `Vault::replace_in_place` keeps the order in
+one place: the new record goes to a temporary name in the same folder (encrypted
+under the path it is going to live at, because the header binds a record to its
+location), the old entry is moved aside, the staged record is renamed into place,
+fewer entries are never left behind, and the old entry is put back if the last step
+fails. The order cannot be verified on the Linux file system CI runs on, so
+`vault::tests::a_record_replaced_where_it_already_is_keeps_its_content_and_its_place`
+stands in for it: the same path holds the old record and becomes the new one, which
+is what a case-insensitive folder does for real.
 
 ## Links and blocks
 
@@ -109,6 +129,20 @@ clear shape (a background thread forwarding into a GPUI entity), not an unknown.
 
 ## Interface rules
 
+- Every write goes through `fs::write_atomic`: a temporary file in the same folder,
+  the file synced, then a rename, then the sync of **the folder the file sits in**
+  (`folder_holding`), not the folder one level above it, and not nothing because the
+  path happened to be relative. The claim in `crypto` that a crash leaves either the
+  previous content or the new content rests on that folder sync.
+- `Error::Io` carries the operating system's reason inside `Display`, not only in the
+  source chain: the CLI, the API and the log file all render `Display`, so
+  "could not create (path)", without "No space left" or "Permission denied", is a
+  bug report nobody can answer. Names too: `Error::InvalidName` says the name is too
+  long in bytes, instead of leaving the file system's error to appear later.
+- `export_plaintext` makes its file names unique per run (`export_file_name`): two
+  note names can collapse into one slug (`A:B` and `A-B`, or two names sharing their
+  first 80 characters), and an export is the one copy a user can read without the
+  vault, so writing one note over another would be losing their backup.
 - `Hub` is the only owner of the unlocked vault, the API handle and the log guard. The
   window shows the unlock screen or the workspace depending on whether the hub holds a
   vault.
@@ -123,9 +157,10 @@ clear shape (a background thread forwarding into a GPUI entity), not an unknown.
 
 ## Testing
 
-- **core**: 103 tests, unit plus `tests/vault.rs` over real temporary folders. Every
+- **core**: 115 tests, unit plus `tests/vault.rs` over real temporary folders. Every
   security claim (wrong password, moved file, copied-in file, renamed note) has a test
-  that tries the attack.
+  that tries the attack, and each of the six bugs the first review of this branch found
+  has a test that failed before the fix did.
 - **api**: 25 tests over a live server on port 0, through the crate's own client, so
   the client is exercised as part of every test.
 - **cli**: 40 tests that run real commands through `run_status` against temporary

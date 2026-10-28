@@ -199,10 +199,10 @@ fn report_error(context: &mut Context, err: &Error) {
         });
         let _ = writeln!(context.stderr, "{line}");
     } else {
+        // `Display` on an io failure already names the folder it happened to and
+        // the reason the operating system gave, so there is nothing to add here:
+        // a bare `error:` line with both is the whole message.
         let _ = writeln!(context.stderr, "error: {err}");
-        if let Some(path) = err.path() {
-            let _ = writeln!(context.stderr, "  in {}", path.display());
-        }
         // A locked vault is the most common surprise, and the fix is not obvious
         // from the message alone.
         if matches!(err, Error::NotAVault { .. }) {
