@@ -16,3 +16,14 @@ serde_json = "1.0.154"
 susnotes-api = { version = "0.1.0", path = "../api" }
 susnotes-core = { version = "0.1.0", path = "../core" }
 tracing = "0.1.44"
+
+[dev-dependencies]
+# GPUI's headless app: the app's views are tested against a real window with no
+# display. `gpui-kit`'s own `test-support` feature cannot be enabled right now -
+# it drags in the `gpui-fast` family, whose published pins conflict with the
+# pinned GPUI in Cargo.lock (cocoa and unicode-properties) - so the test harness
+# comes from the GPUI crate gpui-kit itself is built on. Keep the version in step
+# with the `gpui-pre` entry in Cargo.lock.
+gpui-pre = { version = "=0.3.9", features = ["test-support"] }
+tempfile = "3.27.0"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

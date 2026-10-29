@@ -43,7 +43,7 @@ impl UnlockView {
         });
         let password = cx.new(|cx| InputState::new(window, cx).placeholder("the password"));
 
-        let recent = Hub::recent_vaults();
+        let recent = hub.recent_vaults();
         let subscriptions = vec![
             // Enter in the password field is the whole submit gesture for someone
             // who came back to their own vault: folder, password, Enter.
@@ -145,7 +145,7 @@ impl UnlockView {
     /// Read the recent-vault list again, for when a vault has just been opened or
     /// closed and the list has changed.
     pub fn reload_recent(&mut self, cx: &mut Context<'_, Self>) {
-        self.recent = Hub::recent_vaults();
+        self.recent = self.hub.recent_vaults();
         self.failed = false;
         cx.notify();
     }

@@ -28,10 +28,16 @@ use susnotes_core::{
 /// What a window holds to reach the current vault.
 ///
 /// Cheap to clone: the state behind it is shared, so every window sees the same
-/// vault. `Default` is a hub with nothing open, which is what the app starts with.
-#[derive(Clone, Default)]
+/// vault. A fresh hub has nothing open, which is what the app starts with.
+#[derive(Clone)]
 pub struct Hub {
     inner: Rc<Inner>,
+}
+
+impl Default for Hub {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -49,9 +55,30 @@ struct Inner {
     /// The vault folder asked for on the command line, used to prefill the unlock
     /// window.
     requested: RefCell<Option<PathBuf>>,
+    /// Where susnotes keeps its own state: the recent-vault list. Resolved once,
+    /// so a test can point it at a throwaway folder instead of the real config.
+    state_dir: PathBuf,
 }
 
 impl Hub {
+    /// A hub using susnotes' usual state folder.
+    pub fn new() -> Self {
+        Self::with_state_dir(Self::default_state_dir())
+    }
+
+    /// A hub that keeps its own state (the recent-vault list) in `state_dir`.
+    ///
+    /// Production uses the folder from the environment; a test passes a temporary
+    /// one so opening a vault does not edit the real recent-vault list.
+    pub fn with_state_dir(state_dir: PathBuf) -> Self {
+        Self {
+            inner: Rc::new(Inner {
+                state_dir,
+                ..Inner::default()
+            }),
+        }
+    }
+
     /// The vault folder requested with `--vault`, if any.
     pub fn requested_vault(&self) -> Option<PathBuf> {
         self.inner.requested.borrow().clone()
@@ -78,15 +105,15 @@ impl Hub {
         self.inner.settings.borrow().clone()
     }
 
-    /// Where susnotes keeps its own state: recent vaults, and settings before a
-    /// vault has been chosen.
-    pub fn state_dir() -> PathBuf {
+    /// Where susnotes keeps its own state by default: recent vaults, and settings
+    /// before a vault has been chosen. A hub resolves this once, in [`Hub::new`].
+    pub fn default_state_dir() -> PathBuf {
         config::state_dir()
     }
 
     /// Vaults opened before, newest first.
-    pub fn recent_vaults() -> Vec<RecentVault> {
-        let mut recent = config::recent_vaults_in(&Self::state_dir());
+    pub fn recent_vaults(&self) -> Vec<RecentVault> {
+        let mut recent = config::recent_vaults_in(&self.inner.state_dir);
         // A folder that no longer holds a vault is dropped rather than offered: a
         // list of dead entries is worse than a short list.
         recent.retain(|entry| Vault::is_vault(Path::new(&entry.path)));
@@ -206,7 +233,7 @@ impl Hub {
             self.start_api(&vault, &settings);
         }
 
-        if let Err(err) = config::remember_vault_in(&Self::state_dir(), path) {
+        if let Err(err) = config::remember_vault_in(&self.inner.state_dir, path) {
             tracing::warn!(error = %err, "could not remember this vault as recent");
         }
 

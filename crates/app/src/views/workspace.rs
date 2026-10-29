@@ -34,7 +34,11 @@ pub enum Page {
 
 pub struct WorkspaceView {
     hub: Hub,
-    vault: Arc<Vault>,
+    /// The vault this workspace was built for, kept only for its name in the top
+    /// bar. Everything that reads or writes notes asks [`Hub::vault`], because the
+    /// hub is the one that decides whether a vault is still open; a second handle
+    /// here is what made a journal refresh look safe when it was not.
+    vault_title: SharedString,
     note: Entity<NoteView>,
     journal: Entity<JournalView>,
     page: Page,
@@ -60,6 +64,10 @@ impl WorkspaceView {
     ) -> Self {
         let router = cx.new(|_| LinkRouter::new());
         let autosave_ms = hub.settings().autosave_ms;
+        // The note pane is the one place that holds a vault handle on purpose: an
+        // edit that has not been written down must stay writable even if the vault
+        // is closed under it a moment later, and losing text is worse than a write
+        // that arrives late. Everything else goes through the hub.
         let note = cx.new(|cx| NoteView::new(&router, Arc::clone(&vault), autosave_ms, window, cx));
         let journal = cx.new(|cx| JournalView::new(hub.clone(), &router, window, cx));
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("filter notes"));
@@ -88,7 +96,7 @@ impl WorkspaceView {
 
         let mut view = Self {
             hub,
-            vault,
+            vault_title: vault.title().into(),
             note,
             journal,
             page: Page::Journal,
@@ -115,8 +123,16 @@ impl WorkspaceView {
     /// Read the note list, the router's name set and the status line again. Cheap
     /// enough to do after opening a note, which is what makes a note created by a
     /// clicked link show up in the sidebar at once.
+    ///
+    /// A vault closed under the workspace is a no-op, not an error: the view is on
+    /// its way out, and a repaint of a vault that is no longer open is not worth a
+    /// warning in the log.
     fn refresh_notes(&mut self, cx: &mut Context<'_, Self>) -> Result<(), susnotes_core::Error> {
-        self.notes = self.vault.list_notes()?;
+        let Some(vault) = self.hub.vault() else {
+            tracing::debug!("the note list was re-read with no vault open");
+            return Ok(());
+        };
+        self.notes = vault.list_notes()?;
         let names: Vec<String> = self
             .notes
             .iter()
@@ -126,7 +142,7 @@ impl WorkspaceView {
             .update(cx, |router, cx| router.set_names(names, cx));
         self.refilter(cx);
 
-        let stats = self.vault.stats()?;
+        let stats = vault.stats()?;
         self.status = match self.hub.api_url() {
             Some(url) => format!(
                 "{} notes, {} with content - API {}",
@@ -164,8 +180,11 @@ impl WorkspaceView {
         if name.is_empty() {
             return;
         }
+        let Some(vault) = self.hub.vault() else {
+            tracing::debug!("a note was opened with no vault open");
+            return;
+        };
         self.page = Page::Note(name.to_owned());
-        let vault = Arc::clone(&self.vault);
         self.note.update(cx, |note, cx| {
             if let Err(err) = note.open(name, &vault, window, cx) {
                 tracing::warn!(error = %err, note = name, "the note could not be opened");
@@ -225,7 +244,7 @@ impl Render for WorkspaceView {
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(cx.theme().foreground)
-                    .child(self.vault.title()),
+                    .child(self.vault_title.clone()),
             )
             .child(
                 Button::new("goto-journal")
@@ -278,7 +297,10 @@ impl Render for WorkspaceView {
                         if let Err(err) = view.refresh(cx) {
                             view.status = format!("{err}").into();
                         }
-                        let vault = Arc::clone(&view.vault);
+                        let Some(vault) = view.hub.vault() else {
+                            tracing::debug!("a reload was asked for with no vault open");
+                            return;
+                        };
                         view.note.update(cx, |note, cx| {
                             if let Err(err) = note.reload(&vault, window, cx) {
                                 tracing::warn!(error = %err, "the open note could not be reloaded");
