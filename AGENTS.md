@@ -48,6 +48,7 @@ User can specify a portable folder where all notes and configs will be saved, an
 - You should be very proactive with maintaining this project, if you encounter a difficulty, make sure to improve the code or the tooling so that future sessions will not encounter it. This includes improving logging, tests, development documentation, and setting up development tools. It is also completely acceptable to add and change dependencies as well do big rewrites if necessary.
 - A thorough logging system should be set up so that any issues the user might have while using the app are apparent from the logs.
 - Do not abuse `unsafe`.
+- The app is in pre-alpha and backwards compatibility is not important.
 
 ## Development workflow
 
