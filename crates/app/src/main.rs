@@ -4,8 +4,18 @@
 //! an open vault means the workspace. One window for the whole session keeps that
 //! switch cheap and keeps the theme, the API and the log file in one place.
 
+// A panic in the app is a lost edit: the autosave that had not fired yet is gone
+// with it. `unwrap_used` (workspace lints) already covers `unwrap`, and this covers
+// `expect`, which is how the journal's "the journal needs an open vault" panic got
+// past review. Non-test builds only: a test that panics on an expectation is saying
+// what it expected, in the clearest way it can.
+#![cfg_attr(not(test), warn(clippy::expect_used))]
+
 mod hub;
 mod views;
+
+#[cfg(test)]
+mod testing;
 
 use std::path::PathBuf;
 
@@ -49,7 +59,7 @@ fn main() {
     });
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        state = %Hub::state_dir().display(),
+        state = %Hub::default_state_dir().display(),
         "susnotes starting"
     );
 
@@ -57,7 +67,7 @@ fn main() {
     app.run(move |cx| {
         gpui_kit::init(cx);
 
-        let hub = Hub::default();
+        let hub = Hub::new();
         if let Some(path) = requested {
             hub.set_requested_vault(path);
         }
@@ -66,7 +76,7 @@ fn main() {
         // first window is drawn so the window never flashes the wrong theme.
         apply_theme(&hub, cx);
 
-        gpui_kit::open_window(
+        let opened = gpui_kit::open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("susnotes".into()),
@@ -77,8 +87,14 @@ fn main() {
             },
             cx,
             |window, cx| cx.new(|cx| views::MainView::new(hub, window, cx)),
-        )
-        .expect("the susnotes window to open");
+        );
+        // Nothing can be shown without the window, so say so and end the run:
+        // a panic here would unwind through the event loop, and the log line is
+        // the only thing a bug report would have to work with.
+        if let Err(err) = opened {
+            tracing::error!(error = %err, "the susnotes window could not be opened");
+            cx.quit();
+        }
     });
 }
 
@@ -87,7 +103,7 @@ fn main() {
 fn log_dir_for(requested: Option<&std::path::Path>) -> PathBuf {
     match requested {
         Some(path) if Vault::is_vault(path) => path.join(CONFIG_DIR).join(LOGS_DIR),
-        _ => Hub::state_dir().join("logs"),
+        _ => Hub::default_state_dir().join("logs"),
     }
 }
 

@@ -5,17 +5,16 @@
 //! week, a month or a year of notes is a scroll down the page rather than a folder
 //! tree, and a day that needs its own structure can be linked out to its own note.
 
-use std::sync::Arc;
-
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::text::{TextView, TextViewState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, button::Button, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use susnotes_core::{Error, Vault, journal};
+use susnotes_core::{Error, journal};
 
 use super::links::LinkRouter;
+use crate::hub::Hub;
 
 /// How many earlier days to show below today. More than this and the page becomes
 /// a scroll of the past; the note list and search are the way to go further back.
@@ -29,7 +28,7 @@ pub struct OpenDay {
 }
 
 pub struct JournalView {
-    hub: crate::hub::Hub,
+    hub: Hub,
     router: Entity<LinkRouter>,
     /// Today's page name, e.g. `2026-10-24`.
     today: String,
@@ -49,7 +48,7 @@ pub struct JournalView {
 
 impl JournalView {
     pub fn new(
-        hub: crate::hub::Hub,
+        hub: Hub,
         router: &Entity<LinkRouter>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
@@ -101,41 +100,90 @@ impl JournalView {
     }
 
     /// Read the journal again from the vault: today's page, and the days before it.
+    ///
+    /// A closed vault is a quiet no-op rather than an error: see [`read`]. What is
+    /// shown is cleared, so a page from a vault that is no longer open cannot stay
+    /// on screen.
     pub fn refresh(&mut self, cx: &mut Context<'_, Self>) -> Result<(), Error> {
         self.today = journal::today_name();
-        let today = self.hub.today()?;
-        let today_source = SharedString::from(prepare(today.content.as_str()));
-        if today_source != self.today_source {
-            self.today_source = today_source.clone();
-            self.today_preview
-                .update(cx, |state, cx| state.set_text(today_source.as_str(), cx));
-        }
+        let snapshot = read(&self.hub)?;
 
-        let vault: Arc<Vault> = self.hub.vault().expect("the journal needs an open vault");
-        let mut pages = Vec::new();
-        for page in self
-            .hub
-            .recent_journal_pages(PREVIOUS_DAYS)
+        self.set_today(snapshot.today, cx);
+        self.pages = snapshot
+            .pages
             .into_iter()
-            // An empty day is not worth a divider and a blank block: the point of
-            // the list below today is the days that hold something.
-            .filter(|page| !page.empty)
-        {
-            match vault.read_note(&page.name) {
-                Ok(note) => {
-                    let source = prepare(note.content.as_str());
-                    let preview = cx.new(|cx| TextViewState::markdown(&source, cx));
-                    pages.push((page.name, preview));
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "a journal page could not be read");
-                }
-            }
-        }
-        self.pages = pages;
+            .map(|(name, source)| {
+                let preview = cx.new(|cx| TextViewState::markdown(&source, cx));
+                (name, preview)
+            })
+            .collect();
         cx.notify();
         Ok(())
     }
+
+    /// Show `source` as today's page, skipping the re-parse when it is what is
+    /// already rendered.
+    fn set_today(&mut self, source: String, cx: &mut Context<'_, Self>) {
+        let source = SharedString::from(source);
+        if source == self.today_source {
+            return;
+        }
+        self.today_source = source.clone();
+        self.today_preview
+            .update(cx, |state, cx| state.set_text(source.as_str(), cx));
+    }
+}
+
+/// What a journal redraw reads out of the vault.
+///
+/// Reading and drawing are kept apart because reading is the half that can go
+/// wrong (the vault may have been closed, a page may not decrypt) and the half
+/// worth testing without a window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Snapshot {
+    /// Today's page, prepared for rendering; empty when the day is empty.
+    today: String,
+    /// The earlier days that hold something, newest first: name and source.
+    pages: Vec<(String, String)>,
+}
+
+/// Read today's page and the days before it out of the hub's vault.
+///
+/// No vault is not an error, it is a no-op. A refresh can reach the journal for a
+/// frame after the vault was closed: closing drops the workspace in the same turn
+/// of the event loop, but a frame or a queued input event can still land on the
+/// view while it is being torn down. This place used to answer that situation with
+/// `expect("the journal needs an open vault")`, and a panic in the app costs
+/// whatever the person typing had not written down yet (see the workspace's
+/// refusal to close a vault with an unwritten note).
+fn read(hub: &Hub) -> Result<Snapshot, Error> {
+    let Some(vault) = hub.vault() else {
+        tracing::debug!("the journal was refreshed with no vault open");
+        return Ok(Snapshot::default());
+    };
+
+    let mut snapshot = Snapshot {
+        today: prepare(hub.today()?.content.as_str()),
+        pages: Vec::new(),
+    };
+
+    for page in hub
+        .recent_journal_pages(PREVIOUS_DAYS)
+        .into_iter()
+        // An empty day is not worth a divider and a blank block: the point of
+        // the list below today is the days that hold something.
+        .filter(|page| !page.empty)
+    {
+        match vault.read_note(&page.name) {
+            Ok(note) => snapshot
+                .pages
+                .push((page.name, prepare(note.content.as_str()))),
+            Err(err) => {
+                tracing::warn!(error = %err, "a journal page could not be read");
+            }
+        }
+    }
+    Ok(snapshot)
 }
 
 impl Render for JournalView {
@@ -262,4 +310,119 @@ fn prepare(source: &str) -> String {
         }
     };
     susnotes_core::links::rewrite_for_rendering(source, &prepared.links).text
+}
+
+#[cfg(test)]
+mod tests {
+    // Imported one by one rather than with `use super::*`: the glob at the top of
+    // this module pulls in GPUI's own `test` attribute macro, which then shadows the
+    // built-in `#[test]` - and GPUI's macro emits `#[test]`, so the expansion never
+    // terminates. gpui-kit's lib.rs warns about exactly this.
+    use super::{JournalView, Snapshot, read};
+    use crate::hub::Hub;
+    use crate::testing::{TEST_PASSWORD, capture_logs, hub_with_state_dir, test_vault};
+    use crate::views::links::LinkRouter;
+    use gpui_kit::{AppContext as _, TestAppContext};
+    use susnotes_core::journal;
+
+    /// A hub holding a vault with today written to, the day before it holding a
+    /// line, and the day before that empty.
+    fn hub_with_a_journal() -> (tempfile::TempDir, Hub) {
+        let dir = tempfile::tempdir().expect("temp folder");
+        let vault_dir = dir.path().join("vault");
+        let vault = test_vault(&vault_dir);
+
+        let today = journal::today_name();
+        let yesterday = journal::previous_day(&today).expect("the day before today");
+        let long_ago = journal::previous_day(&yesterday).expect("two days back");
+        vault.write_note(&today, "today's line").expect("today");
+        vault
+            .write_note(&yesterday, "yesterday's line\n\n[[Reading list]]")
+            .expect("yesterday");
+        vault
+            .write_note(&long_ago, "   ")
+            .expect("an empty day is still a page");
+        drop(vault);
+
+        let hub = hub_with_state_dir(&dir.path().join("state"));
+        hub.unlock(&vault_dir, TEST_PASSWORD)
+            .expect("the test vault opens");
+        (dir, hub)
+    }
+
+    #[test]
+    fn a_refresh_reads_today_and_the_earlier_days_that_hold_something() {
+        let (_dir, hub) = hub_with_a_journal();
+        let snapshot = read(&hub).expect("the journal can be read");
+
+        assert_eq!(snapshot.today, "today's line");
+        // The empty day gets no divider and no blank block.
+        assert_eq!(snapshot.pages.len(), 1, "only the day with content shows");
+        assert_eq!(
+            snapshot.pages[0].0,
+            journal::previous_day(&journal::today_name()).expect("yesterday")
+        );
+        assert!(snapshot.pages[0].1.contains("Reading list"));
+    }
+
+    #[test]
+    fn reading_the_journal_after_the_vault_was_closed_is_a_no_op() {
+        let (_dir, hub) = hub_with_a_journal();
+        assert!(
+            !read(&hub)
+                .expect("the journal can be read")
+                .today
+                .is_empty()
+        );
+
+        hub.lock();
+        let (snapshot, logged) =
+            capture_logs(|| read(&hub).expect("a closed vault is not an error"));
+        assert_eq!(snapshot, Snapshot::default(), "nothing is shown");
+
+        // "Quietly" is part of the contract: a refresh arriving during teardown is
+        // normal, so the log has to say why the page went blank rather than treat a
+        // vault that was closed on purpose as a problem.
+        assert!(
+            logged.contains("the journal was refreshed with no vault open"),
+            "the refresh should say why it read nothing: {logged}"
+        );
+        assert!(
+            logged.contains("DEBUG"),
+            "and it should say it at debug level: {logged}"
+        );
+        assert!(
+            !logged.contains("WARN"),
+            "a closed vault is not something to warn about: {logged}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn refreshing_the_journal_after_the_vault_was_closed_does_not_panic(cx: &mut TestAppContext) {
+        let (_dir, hub) = hub_with_a_journal();
+        cx.update(gpui_kit::init);
+
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let router = cx.new(|_| LinkRouter::new());
+            JournalView::new(hub.clone(), &router, window, cx)
+        });
+
+        view.update(cx, |view, cx| view.refresh(cx))
+            .expect("the journal can be redrawn");
+        assert_eq!(view.update(cx, |view, _| view.pages.len()), 1);
+
+        // The refresh that used to `expect` an open vault: the vault is gone, and
+        // the window is still being taken down around the view.
+        hub.lock();
+        view.update(cx, |view, cx| view.refresh(cx))
+            .expect("a closed vault is not an error");
+        assert_eq!(
+            view.update(cx, |view, _| (
+                view.pages.len(),
+                view.today_source.is_empty()
+            )),
+            (0, true),
+            "a closed vault leaves nothing of its own on screen"
+        );
+    }
 }

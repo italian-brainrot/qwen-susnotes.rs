@@ -146,6 +146,14 @@ clear shape (a background thread forwarding into a GPUI entity), not an unknown.
 - `Hub` is the only owner of the unlocked vault, the API handle and the log guard. The
   window shows the unlock screen or the workspace depending on whether the hub holds a
   vault.
+- Views treat `Hub::vault()` being `None` as "this refresh arrived during teardown",
+  not as an impossible state. Closing a vault drops the workspace in the same turn of
+  the event loop, but a frame or a queued input event still reaches the view while it
+  goes away, and a panic in the app costs whatever the person typing had not written
+  down yet. So the vault-backed reads (`JournalView`'s snapshot, the workspace's note
+  list, Reload, opening a note) return quietly and log at `debug!`. The one handle a
+  view is allowed to keep across a close is `NoteView`'s: an unwritten edit has to stay
+  writable, and losing text is worse than a write that lands late.
 - A Markdown plugin must be `Send + Sync + 'static`, so it cannot hold the view that
   shows the note; `LinkRouter` is the small entity both the plugin and the workspace
   can hold, and it emits `LinkClicked`.
@@ -167,9 +175,24 @@ clear shape (a background thread forwarding into a GPUI entity), not an unknown.
   vaults and assert on captured stdout/stderr and the numeric exit code. The harness's
   word splitter has its own test, because `--content ''` has to stay an empty value or
   the tests would mean something else than they say.
-- **app**: not yet unit-tested. GPUI Kit's `test-support` feature and `TestAppContext`
-  are the intended way in; the app's logic worth pinning is `Hub` (which needs no
-  window) and the rewrite/`LinkRouter` path.
+- **app**: 3 tests, in two layers, and they are the crate's first. The half that needs
+  no window is `views::journal::read`, where the vault-touching work of a journal
+  redraw now lives: one test pins "today, plus the earlier days that hold something",
+  another pins that reading after `Hub::lock` is an empty snapshot logged at `debug!`
+  rather than a panic - it failed with the `expect` in place, which is the point. The
+  view half runs in GPUI's headless window (`#[gpui_kit::test]` with a
+  `TestAppContext`), which is how a refresh is reached the way the event loop reaches
+  it. The harness comes from `gpui-pre` as a dev-dependency rather than from
+  `gpui-kit`'s own `test-support` feature: that feature also turns on the `gpui-fast`
+  family, whose published pins (cocoa, unicode-properties) conflict with the GPUI this
+  workspace locks, so it cannot be switched on today. `crates/app/src/testing.rs`
+  holds the shared fixtures (a fast vault, a hub with its own state folder,
+  `capture_logs` for asserting how loudly something was reported).
+
+`crates/app/src/main.rs` warns on `clippy::expect_used` outside `cfg(test)`, which CI's
+`-D warnings` turns into a build failure: the workspace lint set already warns on
+`unwrap`, and `expect` is the same failure with a nicer message - it is what the journal
+panic carried, and it walked past review once.
 
 CI runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
 and `cargo test --workspace`. Warnings are errors, so new code has to keep the lint
